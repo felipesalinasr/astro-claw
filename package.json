@@ -1,0 +1,54 @@
+{
+  "name": "astro-claw",
+  "version": "1.0.0",
+  "description": "Claude Code over Slack — your AI crew member. One command: npx astro-claw",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "astro-claw": "./start.js"
+  },
+  "scripts": {
+    "start": "node start.js",
+    "dev": "nodemon --watch index.js --watch start.js --watch setup.js start.js",
+    "setup": "node start.js --setup"
+  },
+  "keywords": [
+    "slack",
+    "claude",
+    "ai",
+    "agent",
+    "claude-code",
+    "bot",
+    "astronaut"
+  ],
+  "author": "Taxflow <felipe@jointaxflow.ai>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/felipesalinasr/astro-claw"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "start.js",
+    "setup.js",
+    "slack-setup.js",
+    "index.js",
+    "slack-manifest.json",
+    "slack-manifest.yml",
+    "astronaut-icon.png",
+    "workspace/CLAUDE.md",
+    "mcp-servers.example.json",
+    ".env.example"
+  ],
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.85",
+    "@slack/bolt": "^4.1.0",
+    "dotenv": "^16.4.0",
+    "puppeteer-core": "^24.40.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}

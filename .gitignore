@@ -1,0 +1,11 @@
+node_modules/
+.env
+mcp-servers.json
+.sessions.json
+.DS_Store
+workspace/.slack-images/
+workspace/.astronaut-state/
+workspace/.claude/
+workspace/.playwright-mcp/
+workspace/*.md
+!workspace/CLAUDE.md
