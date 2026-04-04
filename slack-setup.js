@@ -146,23 +146,23 @@ export default async function selfDrivingSlackSetup() {
       console.log(`    → ${bold("Sign in to your Slack workspace")} in the browser`);
       console.log(`      ${dim("Take your time — the wizard continues automatically after you log in")}`);
 
-      // Wait for the "Launching workspace" screen — that's the final sign-in confirmation
-      // URL will be like: taxflowinc.slack.com/ssb/redirect or app.slack.com/client/...
+      // Wait for sign-in to complete — detect by URL change away from sign-in pages
       await page.waitForFunction(
         () => {
           const url = window.location.href;
           return url.includes("/ssb/redirect") ||
                  url.includes("/client/") ||
-                 url.includes("app.slack.com");
+                 url.includes("app.slack.com") ||
+                 url.includes("api.slack.com/apps");
         },
         { timeout: 600000 } // 10 minutes
       );
 
       console.log(`    ${CHECK} Signed in`);
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 3000));
       // Auth cookies are set — now redirect to api.slack.com/apps
-      await page.goto("https://api.slack.com/apps", { waitUntil: "networkidle2", timeout: 15000 });
-      await new Promise((r) => setTimeout(r, 1000));
+      await page.goto("https://api.slack.com/apps", { waitUntil: "networkidle2", timeout: 30000 });
+      await new Promise((r) => setTimeout(r, 2000));
     } else {
       console.log(`    ${CHECK} Already signed in`);
     }
@@ -172,32 +172,36 @@ export default async function selfDrivingSlackSetup() {
     await new Promise((r) => setTimeout(r, 2000));
 
     // ── Step 3: Select workspace ──
-    // Find the workspace dropdown (it's a <select> element)
-    const selectEl = await page.waitForSelector("select", { timeout: 10000 }).catch(() => null);
+    console.log(`    → Selecting workspace...`);
+
+    // Try native <select> first, then fall back to custom UI patterns
+    const selectEl = await page.waitForSelector("select", { timeout: 8000 }).catch(() => null);
 
     if (selectEl) {
-      // Get all options in the dropdown
       const options = await page.evaluate(() => {
         const sel = document.querySelector("select");
         if (!sel) return [];
         return Array.from(sel.options)
-          .filter((o) => o.value && o.value !== "" && !o.disabled)
+          .filter((o) => o.value && o.value !== "" && o.value !== "0" && !o.disabled)
           .map((o) => ({ value: o.value, text: o.textContent.trim() }));
       });
 
       if (options.length === 1) {
-        // Single workspace — auto-select it
         console.log(`    → Auto-selecting workspace: ${bold(options[0].text)}`);
         await page.select("select", options[0].value);
-        await new Promise((r) => setTimeout(r, 1000));
+        // Dispatch change event to trigger any listeners
+        await page.evaluate(() => {
+          const sel = document.querySelector("select");
+          sel.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+        await new Promise((r) => setTimeout(r, 1500));
       } else if (options.length > 1) {
-        // Multiple workspaces — let user pick
         console.log(`    → ${bold("Select your workspace")} in the browser dropdown`);
         console.log(`      ${dim("Waiting for you to pick a workspace...")}`);
         await page.waitForFunction(
           () => {
             const sel = document.querySelector("select");
-            return sel && sel.value && sel.value !== "";
+            return sel && sel.value && sel.value !== "" && sel.value !== "0";
           },
           { timeout: 300000 }
         );
@@ -207,12 +211,48 @@ export default async function selfDrivingSlackSetup() {
         });
         console.log(`    ${CHECK} Workspace: ${bold(chosen || "selected")}`);
       }
+    } else {
+      // Slack may use custom UI — look for clickable workspace items
+      const clicked = await page.evaluate(() => {
+        // Look for radio buttons, clickable cards, or list items with workspace names
+        const radios = document.querySelectorAll('input[type="radio"]');
+        if (radios.length === 1) { radios[0].click(); return "radio"; }
+
+        const cards = document.querySelectorAll('[role="option"], [role="radio"], [data-qa*="workspace"]');
+        if (cards.length === 1) { cards[0].click(); return "card"; }
+
+        // Look for any clickable list with single item
+        const items = document.querySelectorAll('.c-menu_item, [class*="workspace"] a, [class*="team"] a');
+        if (items.length === 1) { items[0].click(); return "item"; }
+
+        return null;
+      });
+
+      if (clicked) {
+        console.log(`    ${CHECK} Auto-selected single workspace`);
+        await new Promise((r) => setTimeout(r, 1500));
+      } else {
+        console.log(`    → ${bold("Select your workspace")} in the browser`);
+        console.log(`      ${dim("Waiting for you to pick a workspace...")}`);
+        // Wait for the page to move past workspace selection
+        await page.waitForFunction(
+          () => {
+            const url = window.location.href;
+            return url.includes("manifest") || document.querySelector('textarea, pre, code');
+          },
+          { timeout: 300000 }
+        );
+        console.log(`    ${CHECK} Workspace selected`);
+      }
     }
 
     // Click "Next" (Step 1 → Step 2 of the wizard)
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 1000));
     try {
-      const nextBtn = await page.$('button.c-button--primary');
+      // Try multiple selectors for the primary/next button
+      const nextBtn = await page.$('button.c-button--primary')
+        || await page.$('button[data-qa="next"]')
+        || await page.$('button[type="submit"]');
       if (nextBtn) {
         await nextBtn.click();
         await new Promise((r) => setTimeout(r, 2000));
@@ -264,45 +304,49 @@ export default async function selfDrivingSlackSetup() {
     // ── Step 3: Extract Signing Secret ──
     console.log(`    → Extracting signing secret...`);
     const basicInfoUrl = appId ? `https://api.slack.com/apps/${appId}` : appUrl;
-    await page.goto(basicInfoUrl, { waitUntil: "networkidle2", timeout: 15000 });
+    await page.goto(basicInfoUrl, { waitUntil: "networkidle2", timeout: 30000 });
+    await new Promise((r) => setTimeout(r, 2000));
 
-    // Click "Show" on the signing secret
     let signingSecret = null;
     try {
-      // Look for the signing secret section and click show
+      // Click all "Show" buttons to reveal hidden values
       const showButtons = await page.$$('button');
       for (const btn of showButtons) {
-        const text = await page.evaluate((el) => el.textContent, btn);
-        if (text?.trim() === "Show") {
+        const text = await page.evaluate((el) => el.textContent?.trim(), btn);
+        if (text === "Show" || text === "show") {
           await btn.click();
-          await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 500);
-          break;
+          await new Promise((r) => setTimeout(r, 800));
         }
       }
-      // Extract the signing secret value
+
       signingSecret = await page.evaluate(() => {
-        const inputs = document.querySelectorAll('input[type="text"]');
+        // Check all input fields for hex strings
+        const inputs = document.querySelectorAll('input[type="text"], input[type="password"], input[readonly]');
         for (const input of inputs) {
           const val = input.value;
           if (/^[0-9a-f]{20,}$/i.test(val)) return val;
         }
-        // Try spans/text near "Signing Secret"
-        const labels = document.querySelectorAll('span, label, h4, h5');
-        for (const label of labels) {
-          if (label.textContent?.includes("Signing Secret")) {
-            const parent = label.closest('div')?.parentElement;
-            if (parent) {
-              const text = parent.innerText;
-              const match = text.match(/[0-9a-f]{30,}/i);
-              if (match) return match[0];
-            }
-          }
+        // Search page text near "Signing Secret" label
+        const allText = document.body.innerText;
+        const sigIdx = allText.indexOf("Signing Secret");
+        if (sigIdx !== -1) {
+          const after = allText.substring(sigIdx, sigIdx + 200);
+          const match = after.match(/[0-9a-f]{25,}/i);
+          if (match) return match[0];
+        }
+        // Broader search for hex strings in the page
+        const els = document.querySelectorAll('span, code, pre, div, p');
+        for (const el of els) {
+          const text = el.textContent?.trim();
+          if (text && /^[0-9a-f]{25,}$/i.test(text)) return text;
         }
         return null;
       });
 
       if (signingSecret) {
         console.log(`    ${CHECK} Signing secret captured`);
+      } else {
+        console.log(`    ${WARN} Could not auto-extract signing secret`);
       }
     } catch {
       console.log(`    ${WARN} Could not auto-extract signing secret`);
@@ -342,7 +386,7 @@ export default async function selfDrivingSlackSetup() {
 
       if (nameInput) {
         await nameInput.click({ clickCount: 3 });
-        await nameInput.type("astronaut-socket");
+        await nameInput.type("astro-claw-socket");
         await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 500);
       }
 
@@ -437,32 +481,30 @@ export default async function selfDrivingSlackSetup() {
         const installBtns = await page.$$('a, button');
         for (const btn of installBtns) {
           const text = await page.evaluate((el) => el.textContent?.trim(), btn);
-          if (text?.includes("Install to Workspace") || text?.includes("Reinstall")) {
+          if (text?.includes("Install to Workspace") || text?.includes("Reinstall") || text?.includes("Install App")) {
             await btn.click();
             break;
           }
         }
 
-        // Wait for OAuth consent page
+        // Wait for OAuth consent — user clicks "Allow"
         console.log(`    ${WARN} ${bold("Click 'Allow' in the browser to install the app")}`);
-        await page.waitForFunction(
-          () => window.location.href.includes("/oauth") || window.location.href.includes("apps/"),
-          { timeout: 120000 }
-        );
-        await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 2000);
+        await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 120000 }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 3000));
 
-        // After Allow, should redirect back to OAuth page with tokens
-        if (!page.url().includes("/oauth")) {
-          await page.goto(installUrl, { waitUntil: "networkidle2", timeout: 15000 });
-        }
+        // After Allow, navigate back to OAuth page to get tokens
+        await page.goto(installUrl, { waitUntil: "networkidle2", timeout: 30000 });
+        await new Promise((r) => setTimeout(r, 2000));
 
         // Extract bot token
         botToken = await page.evaluate(() => {
-          const inputs = document.querySelectorAll('input[type="text"], input[readonly]');
+          const inputs = document.querySelectorAll('input[type="text"], input[type="password"], input[readonly]');
           for (const input of inputs) {
             if (input.value?.startsWith("xoxb-")) return input.value;
           }
-          return null;
+          // Check page text
+          const match = document.body.innerText.match(/xoxb-[A-Za-z0-9-]+/);
+          return match ? match[0] : null;
         });
       }
 
