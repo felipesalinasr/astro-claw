@@ -582,16 +582,32 @@ export default async function selfDrivingSlackSetup() {
           }
         }
 
-        // Wait for OAuth consent — user clicks "Allow"
-        await setBannerAction("Click 'Allow' to install the app", "one click and you're done");
-        console.log(`    ${WARN} ${bold("Click 'Allow' in the browser to install the app")}`);
-        await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 120000 }).catch(() => {});
-        await setBannerAuto("Finishing up...", "almost there");
+        // Wait for the OAuth consent page to load
         await new Promise((r) => setTimeout(r, 3000));
 
-        // After Allow, navigate back to OAuth page to get tokens
-        await page.goto(installUrl, { waitUntil: "networkidle2", timeout: 30000 });
+        // Now show the banner — user needs to click "Allow"
+        await setBannerAction("Click 'Allow' to install the app", "one click and you're done");
+        console.log(`    ${WARN} ${bold("Click 'Allow' in the browser to install the app")}`);
+
+        // Wait for redirect back to OAuth page (URL contains /oauth and app ID)
+        // This only resolves AFTER the user clicks Allow and gets redirected
+        await page.waitForFunction(
+          (id) => {
+            const url = window.location.href;
+            return url.includes("/oauth") && url.includes(id);
+          },
+          { timeout: 300000 },  // 5 minutes for user to click Allow
+          appId || ""
+        ).catch(() => {});
+
+        await setBannerAuto("Finishing up...", "almost there");
         await new Promise((r) => setTimeout(r, 2000));
+
+        // If we're not back on the OAuth page, navigate there
+        if (!page.url().includes("/oauth")) {
+          await page.goto(installUrl, { waitUntil: "networkidle2", timeout: 30000 });
+          await new Promise((r) => setTimeout(r, 2000));
+        }
 
         // Extract bot token
         botToken = await page.evaluate(() => {
