@@ -1,11 +1,12 @@
 {
   "name": "astro-claw",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Claude Code over Slack — your AI crew member. One command: npx astro-claw",
   "main": "index.js",
   "type": "module",
   "bin": {
-    "astro-claw": "./start.js"
+    "astro-claw": "./start.js",
+    "aclaw": "./start.js"
   },
   "scripts": {
     "start": "node start.js",
