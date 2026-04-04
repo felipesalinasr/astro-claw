@@ -271,84 +271,38 @@ export default async function selfDrivingSlackSetup() {
     await page.goto(manifestUrl, { waitUntil: "networkidle2", timeout: 30000 });
     await new Promise((r) => setTimeout(r, 2000));
 
-    // ── Step 3: Select workspace ──
-    console.log(`    → Selecting workspace...`);
+    // ── Step 3: Select workspace (always user's choice) ──
+    await setBannerAction("Human action required: Select your workspace and click Next");
+    console.log(`    → ${bold("Select your workspace")} in the browser and click ${bold("Next")}`);
+    console.log(`      ${dim("Waiting for you to pick a workspace...")}`);
 
-    // Try native <select> first, then fall back to custom UI patterns
-    const selectEl = await page.waitForSelector("select", { timeout: 8000 }).catch(() => null);
-
-    if (selectEl) {
-      const options = await page.evaluate(() => {
+    // Wait for user to select workspace and advance past the picker
+    // Detect by: modal disappearing, URL changing, or "Next" being clicked and new content loading
+    await page.waitForFunction(
+      () => {
+        // Option 1: native <select> was changed from default
         const sel = document.querySelector("select");
-        if (!sel) return [];
-        return Array.from(sel.options)
-          .filter((o) => o.value && o.value !== "" && o.value !== "0" && !o.disabled)
-          .map((o) => ({ value: o.value, text: o.textContent.trim() }));
-      });
+        if (sel) {
+          const val = sel.value;
+          // Still on default — keep waiting
+          if (!val || val === "" || val === "0" || sel.selectedOptions?.[0]?.textContent?.trim() === "Select a workspace") {
+            return false;
+          }
+        }
+        // Option 2: modal closed (no more "Pick a workspace" text visible in a dialog)
+        const modal = document.querySelector('[role="dialog"], .c-dialog, .ReactModal__Content');
+        if (!modal) return true;
+        // Option 3: wizard advanced to manifest review (textarea or JSON visible)
+        if (document.querySelector('textarea, pre.code, [data-qa="manifest"]')) return true;
+        return false;
+      },
+      { timeout: 300000 }
+    ).catch(() => {});
 
-      if (options.length === 1) {
-        console.log(`    → Auto-selecting workspace: ${bold(options[0].text)}`);
-        await page.select("select", options[0].value);
-        // Dispatch change event to trigger any listeners
-        await page.evaluate(() => {
-          const sel = document.querySelector("select");
-          sel.dispatchEvent(new Event("change", { bubbles: true }));
-        });
-        await new Promise((r) => setTimeout(r, 1500));
-      } else if (options.length > 1) {
-        await setBannerAction("Human action required: Select your workspace");
-        console.log(`    → ${bold("Select your workspace")} in the browser dropdown`);
-        console.log(`      ${dim("Waiting for you to pick a workspace...")}`);
-        await page.waitForFunction(
-          () => {
-            const sel = document.querySelector("select");
-            return sel && sel.value && sel.value !== "" && sel.value !== "0";
-          },
-          { timeout: 300000 }
-        );
-        const chosen = await page.evaluate(() => {
-          const sel = document.querySelector("select");
-          return sel?.selectedOptions?.[0]?.textContent?.trim();
-        });
-        await setBannerAuto();
-        console.log(`    ${CHECK} Workspace: ${bold(chosen || "selected")}`);
-      }
-    } else {
-      // Slack may use custom UI — look for clickable workspace items
-      const clicked = await page.evaluate(() => {
-        // Look for radio buttons, clickable cards, or list items with workspace names
-        const radios = document.querySelectorAll('input[type="radio"]');
-        if (radios.length === 1) { radios[0].click(); return "radio"; }
-
-        const cards = document.querySelectorAll('[role="option"], [role="radio"], [data-qa*="workspace"]');
-        if (cards.length === 1) { cards[0].click(); return "card"; }
-
-        // Look for any clickable list with single item
-        const items = document.querySelectorAll('.c-menu_item, [class*="workspace"] a, [class*="team"] a');
-        if (items.length === 1) { items[0].click(); return "item"; }
-
-        return null;
-      });
-
-      if (clicked) {
-        console.log(`    ${CHECK} Auto-selected single workspace`);
-        await new Promise((r) => setTimeout(r, 1500));
-      } else {
-        await setBannerAction("Human action required: Select your workspace");
-        console.log(`    → ${bold("Select your workspace")} in the browser`);
-        console.log(`      ${dim("Waiting for you to pick a workspace...")}`);
-        // Wait for the page to move past workspace selection
-        await page.waitForFunction(
-          () => {
-            const url = window.location.href;
-            return url.includes("manifest") || document.querySelector('textarea, pre, code');
-          },
-          { timeout: 300000 }
-        );
-        await setBannerAuto();
-        console.log(`    ${CHECK} Workspace selected`);
-      }
-    }
+    // Give a moment for any transition after workspace selection
+    await new Promise((r) => setTimeout(r, 2000));
+    await setBannerAuto();
+    console.log(`    ${CHECK} Workspace selected`);
 
     // Helper: check if we've landed on the app page (creation complete)
     const isOnAppPage = () => /api\.slack\.com\/apps\/[A-Z0-9]+(?:\/|$)/.test(page.url());
