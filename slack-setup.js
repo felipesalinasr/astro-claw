@@ -6,7 +6,7 @@
  */
 
 import puppeteer from "puppeteer-core";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
@@ -14,6 +14,30 @@ import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(__dirname, "slack-manifest.json");
+const ICON_PATH = resolve(__dirname, "astronaut-icon.png");
+
+// Create a tiny base64 icon for the browser banner
+function getIconDataUrl() {
+  try {
+    const tmpIcon = resolve(__dirname, ".banner-icon-tmp.png");
+    // Use sips (macOS) or convert to resize, fall back to full image
+    try {
+      execSync(`sips -z 48 48 "${ICON_PATH}" --out "${tmpIcon}" 2>/dev/null`, { stdio: "ignore" });
+    } catch {
+      try {
+        execSync(`convert "${ICON_PATH}" -resize 48x48 "${tmpIcon}" 2>/dev/null`, { stdio: "ignore" });
+      } catch {
+        // Use original (will be larger but still works)
+        return `data:image/png;base64,${readFileSync(ICON_PATH).toString("base64")}`;
+      }
+    }
+    const data = `data:image/png;base64,${readFileSync(tmpIcon).toString("base64")}`;
+    try { unlinkSync(tmpIcon); } catch {}
+    return data;
+  } catch {
+    return null;
+  }
+}
 
 // ─── Terminal Colors ────────────────────────────────────────────────
 const bold = (s) => `\x1b[1m${s}\x1b[0m`;
@@ -118,9 +142,13 @@ export default async function selfDrivingSlackSetup() {
     const page = (await browser.pages())[0] || await browser.newPage();
 
     // ── Visual cue: inject banner on every page load ──
+    const iconDataUrl = getIconDataUrl();
+    const iconEl = iconDataUrl
+      ? `<img src="${iconDataUrl}" style="width: 22px; height: 22px; border-radius: 5px;" />`
+      : `<span style="font-size: 16px;">🤖</span>`;
     const BANNER_CSS = `
       position: fixed; top: 0; left: 0; right: 0; z-index: 2147483647;
-      height: 36px; display: flex; align-items: center; justify-content: center; gap: 8px;
+      height: 38px; display: flex; align-items: center; justify-content: center; gap: 10px;
       background: linear-gradient(135deg, #6C5CE7, #A855F7);
       color: #fff; font: 600 13px/1 -apple-system, BlinkMacSystemFont, sans-serif;
       box-shadow: 0 2px 8px rgba(108, 92, 231, 0.4);
@@ -128,7 +156,7 @@ export default async function selfDrivingSlackSetup() {
     `;
     const BANNER_HTML = `
       <div id="astro-claw-banner" style="${BANNER_CSS}">
-        <span style="font-size: 16px;">🤖</span>
+        ${iconEl}
         <span>Astro Claw is driving this browser</span>
         <span style="opacity: 0.6; font-weight: 400; font-size: 11px; margin-left: 4px;">— do not close</span>
       </div>
