@@ -143,39 +143,70 @@ export default async function selfDrivingSlackSetup() {
 
     // ── Visual cue: inject banner on every page load ──
     const iconDataUrl = getIconDataUrl();
-    const iconEl = iconDataUrl
+    const iconHtml = iconDataUrl
       ? `<img src="${iconDataUrl}" style="width: 22px; height: 22px; border-radius: 5px;" />`
       : `<span style="font-size: 16px;">🤖</span>`;
-    const BANNER_CSS = `
-      position: fixed; top: 0; left: 0; right: 0; z-index: 2147483647;
-      height: 38px; display: flex; align-items: center; justify-content: center; gap: 10px;
-      background: linear-gradient(135deg, #6C5CE7, #A855F7);
-      color: #fff; font: 600 13px/1 -apple-system, BlinkMacSystemFont, sans-serif;
-      box-shadow: 0 2px 8px rgba(108, 92, 231, 0.4);
-      letter-spacing: 0.3px;
-    `;
-    const BANNER_HTML = `
-      <div id="astro-claw-banner" style="${BANNER_CSS}">
-        ${iconEl}
-        <span>Astro Claw is driving this browser</span>
-        <span style="opacity: 0.6; font-weight: 400; font-size: 11px; margin-left: 4px;">— do not close</span>
-      </div>
-    `;
-    const BODY_PADDING = `
-      if (!document.body.dataset.astroClaw) {
-        document.body.style.paddingTop = (parseFloat(getComputedStyle(document.body).paddingTop) + 36) + 'px';
-        document.body.dataset.astroClaw = '1';
-      }
-    `;
+
+    // Banner state: "auto" (purple, Astro Claw working) or "action" (amber, user needed)
+    let bannerState = { mode: "auto", text: "Astro Claw is driving this browser", sub: "do not close" };
+
+    const THEMES = {
+      auto: { bg: "linear-gradient(135deg, #6C5CE7, #A855F7)", shadow: "rgba(108, 92, 231, 0.4)" },
+      action: { bg: "linear-gradient(135deg, #F59E0B, #EF6C00)", shadow: "rgba(245, 158, 11, 0.4)" },
+    };
+
+    const buildBannerHtml = () => {
+      const t = THEMES[bannerState.mode];
+      return `
+        <div id="astro-claw-banner" style="
+          position: fixed; top: 0; left: 0; right: 0; z-index: 2147483647;
+          height: 38px; display: flex; align-items: center; justify-content: center; gap: 10px;
+          background: ${t.bg};
+          color: #fff; font: 600 13px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+          box-shadow: 0 2px 8px ${t.shadow};
+          letter-spacing: 0.3px;
+          transition: background 0.3s ease;
+        ">
+          ${iconHtml}
+          <span id="astro-claw-text">${bannerState.text}</span>
+          <span id="astro-claw-sub" style="opacity: 0.7; font-weight: 400; font-size: 11px; margin-left: 4px;">— ${bannerState.sub}</span>
+        </div>`;
+    };
+
     const injectBanner = async (p) => {
       try {
-        await p.evaluate((html, bodyJs) => {
-          if (!document.getElementById('astro-claw-banner')) {
+        await p.evaluate((html, state, themes) => {
+          const existing = document.getElementById('astro-claw-banner');
+          if (!existing) {
             document.body.insertAdjacentHTML('beforeend', html);
-            eval(bodyJs);
+            if (!document.body.dataset.astroClaw) {
+              document.body.style.paddingTop = (parseFloat(getComputedStyle(document.body).paddingTop) + 38) + 'px';
+              document.body.dataset.astroClaw = '1';
+            }
+          } else {
+            // Update existing banner
+            const t = themes[state.mode];
+            existing.style.background = t.bg;
+            existing.style.boxShadow = `0 2px 8px ${t.shadow}`;
+            const textEl = document.getElementById('astro-claw-text');
+            const subEl = document.getElementById('astro-claw-sub');
+            if (textEl) textEl.textContent = state.text;
+            if (subEl) subEl.textContent = `— ${state.sub}`;
           }
-        }, BANNER_HTML, BODY_PADDING);
+        }, buildBannerHtml(), bannerState, THEMES);
       } catch {}
+    };
+
+    // Switch banner to "user action needed" mode
+    const setBannerAction = async (text, sub = "your turn") => {
+      bannerState = { mode: "action", text, sub };
+      await injectBanner(page);
+    };
+
+    // Switch banner back to autonomous mode
+    const setBannerAuto = async (text = "Astro Claw is driving this browser", sub = "do not close") => {
+      bannerState = { mode: "auto", text, sub };
+      await injectBanner(page);
     };
 
     // Inject banner after every navigation and periodically
@@ -210,6 +241,7 @@ export default async function selfDrivingSlackSetup() {
         });
       } catch {}
 
+      await setBannerAction("Sign in to your Slack workspace", "take your time");
       console.log(`    → ${bold("Sign in to your Slack workspace")} in the browser`);
       console.log(`      ${dim("Take your time — the wizard continues automatically after you log in")}`);
 
@@ -225,6 +257,7 @@ export default async function selfDrivingSlackSetup() {
         { timeout: 600000 } // 10 minutes
       );
 
+      await setBannerAuto();
       console.log(`    ${CHECK} Signed in`);
       await new Promise((r) => setTimeout(r, 3000));
       // Auth cookies are set — now redirect to api.slack.com/apps
@@ -263,6 +296,7 @@ export default async function selfDrivingSlackSetup() {
         });
         await new Promise((r) => setTimeout(r, 1500));
       } else if (options.length > 1) {
+        await setBannerAction("Select your workspace", "pick from the dropdown");
         console.log(`    → ${bold("Select your workspace")} in the browser dropdown`);
         console.log(`      ${dim("Waiting for you to pick a workspace...")}`);
         await page.waitForFunction(
@@ -276,6 +310,7 @@ export default async function selfDrivingSlackSetup() {
           const sel = document.querySelector("select");
           return sel?.selectedOptions?.[0]?.textContent?.trim();
         });
+        await setBannerAuto();
         console.log(`    ${CHECK} Workspace: ${bold(chosen || "selected")}`);
       }
     } else {
@@ -299,6 +334,7 @@ export default async function selfDrivingSlackSetup() {
         console.log(`    ${CHECK} Auto-selected single workspace`);
         await new Promise((r) => setTimeout(r, 1500));
       } else {
+        await setBannerAction("Select your workspace", "pick from the list");
         console.log(`    → ${bold("Select your workspace")} in the browser`);
         console.log(`      ${dim("Waiting for you to pick a workspace...")}`);
         // Wait for the page to move past workspace selection
@@ -309,6 +345,7 @@ export default async function selfDrivingSlackSetup() {
           },
           { timeout: 300000 }
         );
+        await setBannerAuto();
         console.log(`    ${CHECK} Workspace selected`);
       }
     }
@@ -546,8 +583,10 @@ export default async function selfDrivingSlackSetup() {
         }
 
         // Wait for OAuth consent — user clicks "Allow"
+        await setBannerAction("Click 'Allow' to install the app", "one click and you're done");
         console.log(`    ${WARN} ${bold("Click 'Allow' in the browser to install the app")}`);
         await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 120000 }).catch(() => {});
+        await setBannerAuto("Finishing up...", "almost there");
         await new Promise((r) => setTimeout(r, 3000));
 
         // After Allow, navigate back to OAuth page to get tokens
