@@ -246,50 +246,41 @@ export default async function selfDrivingSlackSetup() {
       }
     }
 
-    // Click "Next" (Step 1 → Step 2 of the wizard)
-    await new Promise((r) => setTimeout(r, 1000));
-    try {
-      // Try multiple selectors for the primary/next button
-      const nextBtn = await page.$('button.c-button--primary')
+    // Helper: check if we've landed on the app page (creation complete)
+    const isOnAppPage = () => /api\.slack\.com\/apps\/[A-Z0-9]+(?:\/|$)/.test(page.url());
+
+    // Click through the wizard steps — Slack may have 2 or 3 steps
+    // After each click, check if the app was already created
+    console.log(`    → Walking through wizard...`);
+    for (let step = 0; step < 3; step++) {
+      if (isOnAppPage()) break;
+
+      // Look for the primary action button (Next or Create)
+      const btn = await page.$('button.c-button--primary')
         || await page.$('button[data-qa="next"]')
         || await page.$('button[type="submit"]');
-      if (nextBtn) {
-        await nextBtn.click();
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    } catch {}
 
-    // Step 2→3: manifest review — click "Next" again
-    console.log(`    → Reviewing manifest...`);
-    try {
-      const nextBtn2 = await page.$('button.c-button--primary');
-      if (nextBtn2) {
-        await nextBtn2.click();
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    } catch {}
-
-    // Step 3: Click "Create"
-    console.log(`    → Creating app...`);
-    try {
-      // Look for the Create button (usually the primary button on step 3)
-      const buttons = await page.$$('button');
-      for (const btn of buttons) {
-        const text = await page.evaluate((el) => el.textContent?.trim(), btn);
-        if (text === "Create" || text === "Create App") {
-          await btn.click();
-          await new Promise((r) => setTimeout(r, 3000));
-          break;
+      if (btn) {
+        const btnText = await page.evaluate((el) => el.textContent?.trim(), btn);
+        if (btnText === "Create" || btnText === "Create App") {
+          console.log(`    → Creating app...`);
+        } else {
+          console.log(`    → ${btnText || "Next"}...`);
         }
+        await btn.click();
+        await new Promise((r) => setTimeout(r, 3000));
+      } else {
+        break;
       }
-    } catch {}
+    }
 
-    // After creation, we should be on the app's Basic Information page
-    // URL pattern: https://api.slack.com/apps/APPID
-    await page.waitForFunction(
-      () => /api\.slack\.com\/apps\/[A-Z0-9]+/.test(window.location.href),
-      { timeout: 15000 }
-    ).catch(() => {});
+    // Wait for redirect to app page
+    if (!isOnAppPage()) {
+      await page.waitForFunction(
+        () => /api\.slack\.com\/apps\/[A-Z0-9]+/.test(window.location.href),
+        { timeout: 30000 }
+      ).catch(() => {});
+    }
 
     const appUrl = page.url();
     const appIdMatch = appUrl.match(/apps\/([A-Z0-9]+)/);
