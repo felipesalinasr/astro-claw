@@ -350,44 +350,81 @@ export default async function selfDrivingSlackSetup() {
       console.log(`    ${CHECK} App created`);
     }
 
+    // ── Helper: extract token-like strings from page ──
+    const extractFromPage = async (prefix) => {
+      return page.evaluate((pfx) => {
+        // Check all inputs (text, password, hidden, readonly)
+        for (const input of document.querySelectorAll('input')) {
+          if (input.value?.startsWith(pfx)) return input.value;
+        }
+        // Check all text nodes
+        const regex = new RegExp(pfx + '[A-Za-z0-9_-]{10,}');
+        const match = document.body.innerText.match(regex);
+        return match ? match[0] : null;
+      }, prefix);
+    };
+
+    // ── Helper: click button by text (partial match, case-insensitive) ──
+    const clickButton = async (textMatch, waitMs = 1500) => {
+      const buttons = await page.$$('button, a[role="button"], a.c-button');
+      for (const btn of buttons) {
+        const text = await page.evaluate((el) => el.textContent?.trim(), btn);
+        if (text && text.toLowerCase().includes(textMatch.toLowerCase())) {
+          await btn.click();
+          await new Promise((r) => setTimeout(r, waitMs));
+          return true;
+        }
+      }
+      return false;
+    };
+
     // ── Step 3: Extract Signing Secret ──
     console.log(`    → Extracting signing secret...`);
+    await setBannerAuto("Extracting signing secret...", "working");
     const basicInfoUrl = appId ? `https://api.slack.com/apps/${appId}` : appUrl;
     await page.goto(basicInfoUrl, { waitUntil: "networkidle2", timeout: 30000 });
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, 3000));
 
     let signingSecret = null;
     try {
-      // Click all "Show" buttons to reveal hidden values
-      const showButtons = await page.$$('button');
-      for (const btn of showButtons) {
-        const text = await page.evaluate((el) => el.textContent?.trim(), btn);
-        if (text === "Show" || text === "show") {
-          await btn.click();
-          await new Promise((r) => setTimeout(r, 800));
-        }
+      // Click every "Show" button on the page to reveal hidden values
+      let showClicked = true;
+      while (showClicked) {
+        showClicked = await page.evaluate(() => {
+          const btns = [...document.querySelectorAll('button, a')];
+          for (const btn of btns) {
+            const t = btn.textContent?.trim().toLowerCase();
+            if (t === 'show') { btn.click(); return true; }
+          }
+          return false;
+        });
+        if (showClicked) await new Promise((r) => setTimeout(r, 1000));
       }
 
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // Try to find the signing secret
       signingSecret = await page.evaluate(() => {
-        // Check all input fields for hex strings
-        const inputs = document.querySelectorAll('input[type="text"], input[type="password"], input[readonly]');
-        for (const input of inputs) {
+        // Strategy 1: find all inputs and look for 32-char hex
+        for (const input of document.querySelectorAll('input')) {
           const val = input.value;
           if (/^[0-9a-f]{20,}$/i.test(val)) return val;
         }
-        // Search page text near "Signing Secret" label
-        const allText = document.body.innerText;
-        const sigIdx = allText.indexOf("Signing Secret");
-        if (sigIdx !== -1) {
-          const after = allText.substring(sigIdx, sigIdx + 200);
-          const match = after.match(/[0-9a-f]{25,}/i);
-          if (match) return match[0];
+        // Strategy 2: find text near "Signing Secret" heading
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let foundLabel = false;
+        while (walker.nextNode()) {
+          const text = walker.currentNode.textContent.trim();
+          if (text.includes("Signing Secret")) { foundLabel = true; continue; }
+          if (foundLabel && /^[0-9a-f]{25,}$/i.test(text)) return text;
+          if (foundLabel && text.length > 100) foundLabel = false; // moved too far
         }
-        // Broader search for hex strings in the page
-        const els = document.querySelectorAll('span, code, pre, div, p');
-        for (const el of els) {
-          const text = el.textContent?.trim();
-          if (text && /^[0-9a-f]{25,}$/i.test(text)) return text;
+        // Strategy 3: regex the whole page
+        const allText = document.body.innerText;
+        const section = allText.split("Signing Secret")[1];
+        if (section) {
+          const match = section.substring(0, 300).match(/[0-9a-f]{25,}/i);
+          if (match) return match[0];
         }
         return null;
       });
@@ -403,98 +440,82 @@ export default async function selfDrivingSlackSetup() {
 
     // ── Step 4: Generate App-Level Token ──
     console.log(`    → Generating app-level token...`);
+    await setBannerAuto("Generating app-level token...", "working");
     let appToken = null;
     try {
-      // Scroll to App-Level Tokens section and click Generate
+      // Make sure we're on the basic info page
+      if (!page.url().includes(appId)) {
+        await page.goto(basicInfoUrl, { waitUntil: "networkidle2", timeout: 30000 });
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+
+      // Scroll to and click "Generate Token and Scopes"
       await page.evaluate(() => {
-        const headings = document.querySelectorAll('h4, h5, h3, span');
-        for (const h of headings) {
-          if (h.textContent?.includes("App-Level Tokens")) {
-            h.scrollIntoView({ behavior: "smooth" });
+        const els = document.querySelectorAll('button, a');
+        for (const el of els) {
+          if (el.textContent?.includes("Generate") && el.textContent?.includes("Token")) {
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
             break;
           }
         }
       });
-      await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 1000);
+      await new Promise((r) => setTimeout(r, 1000));
+      await clickButton("Generate Token", 2500);
 
-      // Click "Generate Token and Scopes" button
-      const generateBtns = await page.$$('button');
-      for (const btn of generateBtns) {
-        const text = await page.evaluate((el) => el.textContent?.trim(), btn);
-        if (text?.includes("Generate") && text?.includes("Token")) {
-          await btn.click();
-          await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 2000);
-          break;
-        }
+      // Wait for modal to appear
+      const modalInput = await page.waitForSelector(
+        'input[type="text"]:not([readonly])',
+        { timeout: 5000, visible: true }
+      ).catch(() => null);
+
+      if (modalInput) {
+        // Clear and type token name
+        await modalInput.click({ clickCount: 3 });
+        await page.keyboard.press('Backspace');
+        await modalInput.type("astro-claw-socket");
+        await new Promise((r) => setTimeout(r, 500));
+
+        // Add scope — click the scope dropdown/button
+        await clickButton("Add Scope", 1000) || await clickButton("add scope", 1000);
+
+        // Select connections:write
+        await new Promise((r) => setTimeout(r, 500));
+        const scopeSelected = await page.evaluate(() => {
+          const items = document.querySelectorAll('option, [role="option"], [role="menuitem"], li');
+          for (const item of items) {
+            if (item.textContent?.includes("connections:write")) {
+              item.click();
+              // Also try selecting via native select
+              if (item.tagName === 'OPTION') {
+                item.selected = true;
+                item.closest('select')?.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+              return true;
+            }
+          }
+          return false;
+        });
+        await new Promise((r) => setTimeout(r, 1000));
+
+        // Click Generate button in the modal
+        await clickButton("Generate", 3000);
       }
 
-      // Fill in token name in the modal
-      const nameInput = await page.waitForSelector('input[placeholder*="token"]', { timeout: 5000 }).catch(() => null)
-        || await page.waitForSelector('.c-input_text input', { timeout: 3000 }).catch(() => null)
-        || await page.waitForSelector('input[type="text"]', { timeout: 3000 }).catch(() => null);
+      // Try to extract the token
+      appToken = await extractFromPage("xapp-");
 
-      if (nameInput) {
-        await nameInput.click({ clickCount: 3 });
-        await nameInput.type("astro-claw-socket");
-        await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 500);
+      // If not found, wait a bit more and try again
+      if (!appToken) {
+        await new Promise((r) => setTimeout(r, 2000));
+        appToken = await extractFromPage("xapp-");
       }
 
-      // Add scope: connections:write
-      // Look for "Add Scope" button or scope dropdown
-      const addScopeBtn = await page.$$('button');
-      for (const btn of addScopeBtn) {
-        const text = await page.evaluate((el) => el.textContent?.trim(), btn);
-        if (text?.includes("Add Scope") || text?.includes("Add scope")) {
-          await btn.click();
-          await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 1000);
-          break;
-        }
-      }
-
-      // Select connections:write from dropdown
-      const scopeOptions = await page.$$('option, [role="option"], li');
-      for (const opt of scopeOptions) {
-        const text = await page.evaluate((el) => el.textContent, opt);
-        if (text?.includes("connections:write")) {
-          await opt.click();
-          await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 500);
-          break;
-        }
-      }
-
-      // Click Generate
-      const genBtns = await page.$$('button');
-      for (const btn of genBtns) {
-        const text = await page.evaluate((el) => el.textContent?.trim(), btn);
-        if (text === "Generate" || text === "Done") {
-          await btn.click();
-          await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 2000);
-          break;
-        }
-      }
-
-      // Extract the token (xapp-...)
-      appToken = await page.evaluate(() => {
-        const inputs = document.querySelectorAll('input[type="text"], input[readonly]');
-        for (const input of inputs) {
-          if (input.value?.startsWith("xapp-")) return input.value;
-        }
-        // Check text content
-        const els = document.querySelectorAll('span, code, pre, div');
-        for (const el of els) {
-          const text = el.textContent?.trim();
-          if (text?.startsWith("xapp-") && text.length > 20) return text;
-        }
-        return null;
-      });
-
-      // Close modal if still open
+      // Close any open modal
       try {
-        const closeBtns = await page.$$('button[aria-label="Close"], button.c-dialog__close');
-        for (const btn of closeBtns) {
-          await btn.click();
-          break;
-        }
+        await page.evaluate(() => {
+          const close = document.querySelector('button[aria-label="Close"], button[aria-label="close"], .c-dialog__close, [data-qa="close"]');
+          if (close) close.click();
+        });
       } catch {}
 
       if (appToken) {
@@ -506,73 +527,79 @@ export default async function selfDrivingSlackSetup() {
       console.log(`    ${WARN} App-level token generation needs manual step`);
     }
 
-    // ── Step 5: Install to workspace ──
+    // ── Step 5: Install to workspace & get bot token ──
     console.log(`    → Installing to workspace...`);
+    await setBannerAuto("Installing to workspace...", "working");
     let botToken = null;
     try {
       const installUrl = appId
+        ? `https://api.slack.com/apps/${appId}/install-on-team`
+        : `${appUrl}/install-on-team`;
+      const oauthUrl = appId
         ? `https://api.slack.com/apps/${appId}/oauth`
         : `${appUrl}/oauth`;
-      await page.goto(installUrl, { waitUntil: "networkidle2", timeout: 15000 });
-      await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 1500);
 
-      // Check if already installed (Bot Token visible)
-      botToken = await page.evaluate(() => {
-        const inputs = document.querySelectorAll('input[type="text"], input[readonly]');
-        for (const input of inputs) {
-          if (input.value?.startsWith("xoxb-")) return input.value;
-        }
-        return null;
-      });
+      // Go to Install page first
+      await page.goto(installUrl, { waitUntil: "networkidle2", timeout: 30000 });
+      await new Promise((r) => setTimeout(r, 2000));
+
+      // Check if already installed — try OAuth page for token
+      botToken = await extractFromPage("xoxb-");
 
       if (!botToken) {
-        // Click "Install to Workspace"
-        const installBtns = await page.$$('a, button');
-        for (const btn of installBtns) {
-          const text = await page.evaluate((el) => el.textContent?.trim(), btn);
-          if (text?.includes("Install to Workspace") || text?.includes("Reinstall") || text?.includes("Install App")) {
-            await btn.click();
-            break;
+        // Click install button (could be link or button)
+        const installed = await page.evaluate(() => {
+          const els = document.querySelectorAll('a, button');
+          for (const el of els) {
+            const text = el.textContent?.trim();
+            if (text?.includes("Install to Workspace") || text?.includes("Reinstall") || text?.includes("Install App")) {
+              el.click();
+              return true;
+            }
           }
+          // Also try: direct link might already be the install action
+          return false;
+        });
+
+        if (installed) {
+          // Wait for the consent page to load
+          await new Promise((r) => setTimeout(r, 3000));
         }
 
-        // Wait for the OAuth consent page to load
-        await new Promise((r) => setTimeout(r, 3000));
+        // Check if we're on the consent page (has "Allow" button)
+        const hasAllow = await page.evaluate(() => {
+          return !!document.querySelector('button[data-qa="oauth_submit_button"]') ||
+                 document.body.innerText.includes("is requesting permission");
+        }).catch(() => false);
 
-        // Now show the banner — user needs to click "Allow"
-        await setBannerAction("Human action required: Click 'Allow' to install the app");
-        console.log(`    ${WARN} ${bold("Click 'Allow' in the browser to install the app")}`);
+        if (hasAllow) {
+          await setBannerAction("Human action required: Click 'Allow' to install the app");
+          console.log(`    ${WARN} ${bold("Click 'Allow' in the browser to install the app")}`);
 
-        // Wait for redirect back to OAuth page (URL contains /oauth and app ID)
-        // This only resolves AFTER the user clicks Allow and gets redirected
-        await page.waitForFunction(
-          (id) => {
-            const url = window.location.href;
-            return url.includes("/oauth") && url.includes(id);
-          },
-          { timeout: 300000 },  // 5 minutes for user to click Allow
-          appId || ""
-        ).catch(() => {});
+          // Wait for user to click Allow — page will redirect
+          await page.waitForFunction(
+            () => !document.body.innerText.includes("is requesting permission"),
+            { timeout: 300000 }
+          ).catch(() => {});
 
-        await setBannerAuto("Finishing up...", "almost there");
+          await setBannerAuto("Finishing up...", "almost there");
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+
+        // Navigate to OAuth page to get the bot token
+        await page.goto(oauthUrl, { waitUntil: "networkidle2", timeout: 30000 });
         await new Promise((r) => setTimeout(r, 2000));
 
-        // If we're not back on the OAuth page, navigate there
-        if (!page.url().includes("/oauth")) {
-          await page.goto(installUrl, { waitUntil: "networkidle2", timeout: 30000 });
-          await new Promise((r) => setTimeout(r, 2000));
-        }
-
-        // Extract bot token
-        botToken = await page.evaluate(() => {
-          const inputs = document.querySelectorAll('input[type="text"], input[type="password"], input[readonly]');
-          for (const input of inputs) {
-            if (input.value?.startsWith("xoxb-")) return input.value;
+        // Click Show buttons to reveal tokens
+        await page.evaluate(() => {
+          const btns = [...document.querySelectorAll('button, a')];
+          for (const btn of btns) {
+            if (btn.textContent?.trim().toLowerCase() === 'show') btn.click();
           }
-          // Check page text
-          const match = document.body.innerText.match(/xoxb-[A-Za-z0-9-]+/);
-          return match ? match[0] : null;
         });
+        await new Promise((r) => setTimeout(r, 1000));
+
+        botToken = await extractFromPage("xoxb-");
       }
 
       if (botToken) {
@@ -580,7 +607,7 @@ export default async function selfDrivingSlackSetup() {
       } else {
         console.log(`    ${WARN} Could not auto-extract bot token`);
       }
-    } catch {
+    } catch (err) {
       console.log(`    ${WARN} Installation needs manual step`);
     }
 
