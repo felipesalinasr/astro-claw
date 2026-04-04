@@ -117,6 +117,45 @@ export default async function selfDrivingSlackSetup() {
 
     const page = (await browser.pages())[0] || await browser.newPage();
 
+    // ── Visual cue: inject banner on every page load ──
+    const BANNER_CSS = `
+      position: fixed; top: 0; left: 0; right: 0; z-index: 2147483647;
+      height: 36px; display: flex; align-items: center; justify-content: center; gap: 8px;
+      background: linear-gradient(135deg, #6C5CE7, #A855F7);
+      color: #fff; font: 600 13px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+      box-shadow: 0 2px 8px rgba(108, 92, 231, 0.4);
+      letter-spacing: 0.3px;
+    `;
+    const BANNER_HTML = `
+      <div id="astro-claw-banner" style="${BANNER_CSS}">
+        <span style="font-size: 16px;">🤖</span>
+        <span>Astro Claw is driving this browser</span>
+        <span style="opacity: 0.6; font-weight: 400; font-size: 11px; margin-left: 4px;">— do not close</span>
+      </div>
+    `;
+    const BODY_PADDING = `
+      if (!document.body.dataset.astroClaw) {
+        document.body.style.paddingTop = (parseFloat(getComputedStyle(document.body).paddingTop) + 36) + 'px';
+        document.body.dataset.astroClaw = '1';
+      }
+    `;
+    const injectBanner = async (p) => {
+      try {
+        await p.evaluate((html, bodyJs) => {
+          if (!document.getElementById('astro-claw-banner')) {
+            document.body.insertAdjacentHTML('beforeend', html);
+            eval(bodyJs);
+          }
+        }, BANNER_HTML, BODY_PADDING);
+      } catch {}
+    };
+
+    // Inject banner after every navigation and periodically
+    page.on('load', () => injectBanner(page));
+    page.on('domcontentloaded', () => injectBanner(page));
+    page.on('framenavigated', () => setTimeout(() => injectBanner(page), 500));
+    const bannerInterval = setInterval(() => injectBanner(page), 2000);
+
     // ── Step 1: Sign in to Slack (single tab, no interruptions) ──
     console.log(`    → Checking Slack login...`);
     await page.goto("https://api.slack.com/apps", { waitUntil: "networkidle2", timeout: 30000 });
@@ -509,6 +548,7 @@ export default async function selfDrivingSlackSetup() {
     }
 
     // ── Clean up ──
+    clearInterval(bannerInterval);
     await browser.close();
 
     // Return whatever we captured
@@ -524,6 +564,7 @@ export default async function selfDrivingSlackSetup() {
     return result;
   } catch (err) {
     console.log(`    ${WARN} Browser automation error: ${err.message}`);
+    clearInterval(bannerInterval);
     if (browser) await browser.close().catch(() => {});
     return null;
   }
