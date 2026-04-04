@@ -241,7 +241,7 @@ export default async function selfDrivingSlackSetup() {
         });
       } catch {}
 
-      await setBannerAction("Sign in to your Slack workspace", "take your time");
+      await setBannerAction("Human action required: Sign in to your Slack workspace");
       console.log(`    → ${bold("Sign in to your Slack workspace")} in the browser`);
       console.log(`      ${dim("Take your time — the wizard continues automatically after you log in")}`);
 
@@ -296,7 +296,7 @@ export default async function selfDrivingSlackSetup() {
         });
         await new Promise((r) => setTimeout(r, 1500));
       } else if (options.length > 1) {
-        await setBannerAction("Select your workspace", "pick from the dropdown");
+        await setBannerAction("Human action required: Select your workspace");
         console.log(`    → ${bold("Select your workspace")} in the browser dropdown`);
         console.log(`      ${dim("Waiting for you to pick a workspace...")}`);
         await page.waitForFunction(
@@ -334,7 +334,7 @@ export default async function selfDrivingSlackSetup() {
         console.log(`    ${CHECK} Auto-selected single workspace`);
         await new Promise((r) => setTimeout(r, 1500));
       } else {
-        await setBannerAction("Select your workspace", "pick from the list");
+        await setBannerAction("Human action required: Select your workspace");
         console.log(`    → ${bold("Select your workspace")} in the browser`);
         console.log(`      ${dim("Waiting for you to pick a workspace...")}`);
         // Wait for the page to move past workspace selection
@@ -586,7 +586,7 @@ export default async function selfDrivingSlackSetup() {
         await new Promise((r) => setTimeout(r, 3000));
 
         // Now show the banner — user needs to click "Allow"
-        await setBannerAction("Click 'Allow' to install the app", "one click and you're done");
+        await setBannerAction("Human action required: Click 'Allow' to install the app");
         console.log(`    ${WARN} ${bold("Click 'Allow' in the browser to install the app")}`);
 
         // Wait for redirect back to OAuth page (URL contains /oauth and app ID)
