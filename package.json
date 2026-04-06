@@ -1,6 +1,6 @@
 {
   "name": "astro-claw",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Claude Code over Slack — your AI crew member. One command: npx astro-claw",
   "main": "index.js",
   "type": "module",

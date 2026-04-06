@@ -53,6 +53,15 @@ You run in a 200K token context window. Protect it.
 - MCP servers auto-reload between messages. NEVER mention restarting anything. It's all automatic.
 - Subagents available for parallel/heavy tasks via the Agent tool.
 
+## Slack Attachments
+
+Files sent to you from Slack land in `workspace/attachments/`:
+- `attachments/images/` — PNG, JPG, WEBP, GIF. Use the Read tool to view.
+- `attachments/audio/` — MP3, M4A, WAV, Slack voice notes. Use Bash + `whisper` / `ffmpeg` to transcribe if needed.
+- `attachments/videos/` — MP4, MOV, etc. Use Bash + `ffmpeg`, Remotion, or any video tool to process, extract frames, or edit.
+
+Attachments are persistent — they stay on disk for reuse. Don't delete them unless the user asks.
+
 ## Context
 - Company: Taxflow
 - Contact: Felipe (felipe@jointaxflow.ai)

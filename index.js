@@ -44,10 +44,13 @@ if (FORBIDDEN_PATHS.includes(WORKSPACE_DIR.replace(/\/+$/, ""))) {
 // ─── Directories ────────────────────────────────────────────────────
 const MCP_CONFIG_PATH = resolve(CONFIG_HOME, "mcp-servers.json");
 const SESSIONS_FILE = resolve(CONFIG_HOME, ".sessions.json");
-const DOWNLOADS_DIR = resolve(WORKSPACE_DIR, ".slack-images");
+const ATTACHMENTS_DIR = resolve(WORKSPACE_DIR, "attachments");
+const IMAGES_DIR = resolve(ATTACHMENTS_DIR, "images");
+const AUDIO_DIR = resolve(ATTACHMENTS_DIR, "audio");
+const VIDEOS_DIR = resolve(ATTACHMENTS_DIR, "videos");
 const STATE_DIR = resolve(WORKSPACE_DIR, ".astronaut-state");
 
-for (const dir of [DOWNLOADS_DIR, STATE_DIR]) {
+for (const dir of [IMAGES_DIR, AUDIO_DIR, VIDEOS_DIR, STATE_DIR]) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
@@ -180,11 +183,47 @@ const sessions = {
   entries: () => _sessions.entries(),
 };
 
-// ─── Image Handling ─────────────────────────────────────────────────
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
-const SUPPORTED_IMAGE_TYPES = ["png", "jpg", "jpeg", "webp"];
+// ─── Attachment Handling ────────────────────────────────────────────
+// Slack attachments (images, audio, video) are downloaded to persistent
+// folders under workspace/attachments/ so Claude Code can reference them
+// with its tools. No size caps — Slack enforces its own limits.
 
-async function downloadSlackFile(file) {
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "gif", "heic"]);
+const AUDIO_EXTS = new Set(["mp3", "m4a", "wav", "ogg", "aac", "flac", "opus"]);
+const VIDEO_EXTS = new Set(["mp4", "mov", "mkv", "avi", "webm", "m4v"]);
+
+// Classify a Slack file into one of: image | audio | video | null
+function classifyAttachment(file) {
+  const ext = (file.filetype || file.name?.split(".").pop() || "").toLowerCase();
+  const mime = (file.mimetype || "").toLowerCase();
+  const subtype = (file.subtype || "").toLowerCase();
+
+  // Slack voice notes come as subtype "slack_audio" (or sometimes audio/mp4)
+  if (subtype.includes("audio") || mime.startsWith("audio/")) return "audio";
+  if (mime.startsWith("image/") || IMAGE_EXTS.has(ext)) return "image";
+  if (mime.startsWith("video/")) {
+    // Slack voice notes can arrive as mp4 with audio-only streams — treat mp4
+    // from the audio subtype as audio, otherwise video
+    return VIDEO_EXTS.has(ext) ? "video" : "video";
+  }
+  if (AUDIO_EXTS.has(ext)) return "audio";
+  if (VIDEO_EXTS.has(ext)) return "video";
+  return null;
+}
+
+// Build a timestamped, filesystem-safe filename
+function buildAttachmentName(file, kind) {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const ts = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const originalName = (file.name || `${kind}.${file.filetype || "bin"}`)
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 120);
+  return `${ts}_${originalName}`;
+}
+
+// Download a Slack file to the appropriate attachment folder
+async function downloadSlackFile(file, kind) {
   const url = file.url_private_download || file.url_private;
   if (!url) return null;
 
@@ -192,44 +231,58 @@ async function downloadSlackFile(file) {
     headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
   });
   if (!response.ok) {
-    console.error(`[Image] Download failed ${file.name}: ${response.status}`);
+    console.error(`[Attachment] Download failed ${file.name}: ${response.status}`);
     return null;
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length === 0 || buffer.length > MAX_IMAGE_BYTES) {
-    console.error(`[Image] Invalid size (${buffer.length} bytes): ${file.name}`);
+  if (buffer.length === 0) {
+    console.error(`[Attachment] Empty file: ${file.name}`);
     return null;
   }
 
-  const ext = file.filetype || file.name?.split(".").pop() || "png";
-  const rawName = file.name || `image.${ext}`;
-  const localPath = safePath(DOWNLOADS_DIR, `${Date.now()}-${rawName}`);
-  writeFileSync(localPath, buffer);
-  console.log(`[Image] ${rawName} → ${localPath} (${buffer.length} bytes)`);
-  return localPath;
+  const targetDir =
+    kind === "image" ? IMAGES_DIR :
+    kind === "audio" ? AUDIO_DIR :
+    VIDEOS_DIR;
+
+  const localPath = safePath(targetDir, buildAttachmentName(file, kind));
+
+  try {
+    writeFileSync(localPath, buffer);
+  } catch (err) {
+    if (err.code === "ENOSPC") {
+      console.error(`[Attachment] Disk full while saving ${file.name}`);
+      throw new Error("Not enough disk space on your machine to save this file.");
+    }
+    throw err;
+  }
+
+  console.log(`[Attachment:${kind}] ${file.name || "unnamed"} → ${localPath} (${buffer.length} bytes)`);
+  return { path: localPath, kind, name: file.name || "" };
 }
 
-async function processSlackImages(files) {
+// Process all attachments from a Slack message — returns array of
+// { path, kind, name } grouped by type.
+async function processSlackAttachments(files) {
   if (!files?.length) return [];
-  const paths = [];
+  const results = [];
   for (const file of files) {
-    const ext = (file.filetype || "").toLowerCase();
-    const mime = (file.mimetype || "").toLowerCase();
-    if (!SUPPORTED_IMAGE_TYPES.includes(ext) && !mime.match(/^image\/(png|jpeg|webp)$/)) {
-      console.log(`[Image] Skipping unsupported: ${file.name} (${ext || mime})`);
+    const kind = classifyAttachment(file);
+    if (!kind) {
+      console.log(`[Attachment] Skipping unsupported: ${file.name} (${file.filetype || file.mimetype})`);
       continue;
     }
-    const path = await downloadSlackFile(file);
-    if (path) paths.push(path);
+    try {
+      const downloaded = await downloadSlackFile(file, kind);
+      if (downloaded) results.push(downloaded);
+    } catch (err) {
+      console.error(`[Attachment] ${file.name}: ${err.message}`);
+      // Propagate disk-full errors so caller can surface them
+      if (err.message?.includes("disk space")) throw err;
+    }
   }
-  return paths;
-}
-
-function cleanupImages(imagePaths) {
-  for (const p of imagePaths) {
-    try { unlinkSync(p); } catch (_) {}
-  }
+  return results;
 }
 
 // ─── State File Helpers ─────────────────────────────────────────────
@@ -361,7 +414,8 @@ function splitMessage(text, maxLength = MAX_SLACK_MSG) {
 }
 
 // ─── Core: Ask Claude ───────────────────────────────────────────────
-async function askClaude(userMessage, userId, channel, messageTs, imagePaths = [], retryDepth = 0) {
+// `attachments` is an array of { path, kind, name } objects.
+async function askClaude(userMessage, userId, channel, messageTs, attachments = [], retryDepth = 0) {
   if (retryDepth >= MAX_RETRIES) {
     return "Request failed after retries. Please try again.";
   }
@@ -417,8 +471,24 @@ async function askClaude(userMessage, userId, channel, messageTs, imagePaths = [
 
   try {
     let fullPrompt = userMessage.slice(0, MAX_USER_MESSAGE);
-    if (imagePaths.length > 0) {
-      fullPrompt += `\n\n[The user shared ${imagePaths.length} image(s) via Slack. Use the Read tool to view them:]\n${imagePaths.map((p) => `  - ${p}`).join("\n")}`;
+    if (attachments.length > 0) {
+      const byKind = { image: [], audio: [], video: [] };
+      for (const a of attachments) byKind[a.kind]?.push(a.path);
+
+      const lines = [];
+      if (byKind.image.length > 0) {
+        lines.push(`[${byKind.image.length} image(s) shared via Slack — use the Read tool to view them:]`);
+        for (const p of byKind.image) lines.push(`  - ${p}`);
+      }
+      if (byKind.audio.length > 0) {
+        lines.push(`[${byKind.audio.length} audio file(s) shared via Slack — saved to disk. Use Bash tools (e.g. whisper, ffmpeg) to transcribe or process if needed:]`);
+        for (const p of byKind.audio) lines.push(`  - ${p}`);
+      }
+      if (byKind.video.length > 0) {
+        lines.push(`[${byKind.video.length} video(s) shared via Slack — saved to disk. Use Bash tools (ffmpeg, Remotion, etc.) to process, extract frames, or edit if needed:]`);
+        for (const p of byKind.video) lines.push(`  - ${p}`);
+      }
+      fullPrompt += `\n\n${lines.join("\n")}`;
     }
 
     if (!isResume) {
@@ -527,9 +597,10 @@ async function askClaude(userMessage, userId, channel, messageTs, imagePaths = [
   } catch (err) {
     console.error("Claude error:", err);
 
-    if (imagePaths.length > 0 && err.message?.includes("Could not process image")) {
-      console.log("[Image] API rejected image — retrying without");
-      return askClaude(userMessage, userId, channel, messageTs, [], retryDepth + 1);
+    if (attachments.length > 0 && err.message?.includes("Could not process image")) {
+      console.log("[Attachment] API rejected image — retrying with images dropped");
+      const nonImage = attachments.filter((a) => a.kind !== "image");
+      return askClaude(userMessage, userId, channel, messageTs, nonImage, retryDepth + 1);
     }
 
     if (isResume) {
@@ -541,7 +612,7 @@ async function askClaude(userMessage, userId, channel, messageTs, imagePaths = [
           text: "🔄 _Session expired — reconnecting..._",
         });
       } catch (_) {}
-      return askClaude(userMessage, userId, channel, messageTs, imagePaths, retryDepth + 1);
+      return askClaude(userMessage, userId, channel, messageTs, attachments, retryDepth + 1);
     }
 
     return sanitizeError(err);
@@ -560,7 +631,7 @@ async function askClaude(userMessage, userId, channel, messageTs, imagePaths = [
     } catch (_) {}
     return askClaude(
       userMessage + "\n\n[SYSTEM: Fresh session. All tools available. Do NOT mention restarting. Execute directly.]",
-      userId, channel, messageTs, imagePaths, retryDepth + 1
+      userId, channel, messageTs, attachments, retryDepth + 1
     );
   }
 
@@ -680,25 +751,42 @@ async function handleMessage(userId, text, channel, files, say, threadTs) {
   }
 
   // ── Send to Claude ──
-  const sayOpts = threadTs ? { text: hasFiles ? "📎 Downloading images..." : "Thinking...", thread_ts: threadTs } : (hasFiles ? "📎 Downloading images..." : "Thinking...");
+  const sayOpts = threadTs ? { text: hasFiles ? "📎 Downloading attachments..." : "Thinking...", thread_ts: threadTs } : (hasFiles ? "📎 Downloading attachments..." : "Thinking...");
   const thinking = await say(sayOpts);
 
-  let imagePaths = [];
+  let attachments = [];
   if (hasFiles) {
-    imagePaths = await processSlackImages(files);
-    if (imagePaths.length > 0) {
+    try {
+      attachments = await processSlackAttachments(files);
+    } catch (err) {
+      // Disk full or other hard error during download
+      await app.client.chat.update({
+        token: SLACK_BOT_TOKEN, channel, ts: thinking.ts,
+        text: `⚠️ ${err.message}`,
+      }).catch(() => {});
+      return;
+    }
+
+    if (attachments.length > 0) {
+      const counts = { image: 0, audio: 0, video: 0 };
+      for (const a of attachments) counts[a.kind]++;
+      const parts = [];
+      if (counts.image) parts.push(`${counts.image} image${counts.image > 1 ? "s" : ""}`);
+      if (counts.audio) parts.push(`${counts.audio} audio`);
+      if (counts.video) parts.push(`${counts.video} video${counts.video > 1 ? "s" : ""}`);
       try {
         await app.client.chat.update({
           token: SLACK_BOT_TOKEN, channel, ts: thinking.ts,
-          text: `📎 Got ${imagePaths.length} image(s). Thinking...`,
+          text: `📎 Got ${parts.join(" + ")}. Thinking...`,
         });
       } catch (_) {}
     }
   }
 
   try {
-    const messageText = text.trim().slice(0, MAX_USER_MESSAGE) || (imagePaths.length > 0 ? "I shared some images. Please describe what you see." : "");
-    const response = await askClaude(messageText, userId, channel, thinking.ts, imagePaths);
+    const messageText = text.trim().slice(0, MAX_USER_MESSAGE) ||
+      (attachments.length > 0 ? "I shared some files — take a look and tell me what you can do with them." : "");
+    const response = await askClaude(messageText, userId, channel, thinking.ts, attachments);
     const chunks = splitMessage(response);
 
     await app.client.chat.update({
@@ -713,9 +801,9 @@ async function handleMessage(userId, text, channel, files, say, threadTs) {
       token: SLACK_BOT_TOKEN, channel, ts: thinking.ts,
       text: sanitizeError(err),
     }).catch(() => {});
-  } finally {
-    cleanupImages(imagePaths);
   }
+  // Note: attachments are persistent — no cleanup. Users/Claude can access
+  // them later from workspace/attachments/{images,audio,videos}/
 }
 
 // ─── MCP Command Handler (admin-gated) ──────────────────────────────

@@ -3,6 +3,7 @@ node_modules/
 mcp-servers.json
 .sessions.json
 .DS_Store
+workspace/attachments/
 workspace/.slack-images/
 workspace/.astronaut-state/
 workspace/.claude/
