@@ -6,6 +6,7 @@ import { homedir } from "os";
 import pkg from "@slack/bolt";
 const { App } = pkg;
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { transcribeAudio } from "./transcribe.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -481,7 +482,7 @@ async function askClaude(userMessage, userId, channel, messageTs, attachments = 
         for (const p of byKind.image) lines.push(`  - ${p}`);
       }
       if (byKind.audio.length > 0) {
-        lines.push(`[${byKind.audio.length} audio file(s) shared via Slack — saved to disk. Use Bash tools (e.g. whisper, ffmpeg) to transcribe or process if needed:]`);
+        lines.push(`[${byKind.audio.length} audio file(s) saved to disk (transcript already inlined above if available):]`);
         for (const p of byKind.audio) lines.push(`  - ${p}`);
       }
       if (byKind.video.length > 0) {
@@ -783,9 +784,47 @@ async function handleMessage(userId, text, channel, files, say, threadTs) {
     }
   }
 
+  // ── Transcribe audio attachments (voice notes become the prompt) ──
+  let voiceTranscripts = [];
+  const audioAttachments = attachments.filter((a) => a.kind === "audio");
+  if (audioAttachments.length > 0) {
+    try {
+      await app.client.chat.update({
+        token: SLACK_BOT_TOKEN, channel, ts: thinking.ts,
+        text: `🎤 Transcribing ${audioAttachments.length} voice note${audioAttachments.length > 1 ? "s" : ""}...`,
+      });
+    } catch (_) {}
+
+    for (const audio of audioAttachments) {
+      const transcript = await transcribeAudio(audio.path);
+      if (transcript) {
+        voiceTranscripts.push(transcript);
+      }
+    }
+
+    if (voiceTranscripts.length > 0) {
+      try {
+        await app.client.chat.update({
+          token: SLACK_BOT_TOKEN, channel, ts: thinking.ts,
+          text: `🎤 Transcribed. Thinking...`,
+        });
+      } catch (_) {}
+    }
+  }
+
   try {
-    const messageText = text.trim().slice(0, MAX_USER_MESSAGE) ||
-      (attachments.length > 0 ? "I shared some files — take a look and tell me what you can do with them." : "");
+    // Build the final message: typed text + transcribed voice notes
+    let messageText = text.trim().slice(0, MAX_USER_MESSAGE);
+    if (voiceTranscripts.length > 0) {
+      const transcriptBlock = voiceTranscripts
+        .map((t, i) => voiceTranscripts.length > 1 ? `[Voice ${i + 1}]: ${t}` : t)
+        .join("\n\n");
+      messageText = messageText
+        ? `${messageText}\n\n[Voice note transcript]:\n${transcriptBlock}`
+        : transcriptBlock;
+    } else if (!messageText && attachments.length > 0) {
+      messageText = "I shared some files — take a look and tell me what you can do with them.";
+    }
     const response = await askClaude(messageText, userId, channel, thinking.ts, attachments);
     const chunks = splitMessage(response);
 

@@ -57,7 +57,7 @@ You run in a 200K token context window. Protect it.
 
 Files sent to you from Slack land in `workspace/attachments/`:
 - `attachments/images/` — PNG, JPG, WEBP, GIF. Use the Read tool to view.
-- `attachments/audio/` — MP3, M4A, WAV, Slack voice notes. Use Bash + `whisper` / `ffmpeg` to transcribe if needed.
+- `attachments/audio/` — MP3, M4A, WAV, Slack voice notes. **Voice notes are auto-transcribed and the text is inlined directly into the user's message** under `[Voice note transcript]:` — treat that as the user speaking. The audio file is also saved if you need it.
 - `attachments/videos/` — MP4, MOV, etc. Use Bash + `ffmpeg`, Remotion, or any video tool to process, extract frames, or edit.
 
 Attachments are persistent — they stay on disk for reuse. Don't delete them unless the user asks.

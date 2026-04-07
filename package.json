@@ -1,6 +1,6 @@
 {
   "name": "astro-claw",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Claude Code over Slack — your AI crew member. One command: npx astro-claw",
   "main": "index.js",
   "type": "module",
@@ -36,6 +36,7 @@
     "setup.js",
     "slack-setup.js",
     "index.js",
+    "transcribe.js",
     "slack-manifest.json",
     "slack-manifest.yml",
     "astronaut-icon.png",
@@ -45,6 +46,7 @@
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.85",
+    "@huggingface/transformers": "^4.0.1",
     "@slack/bolt": "^4.1.0",
     "dotenv": "^16.4.0"
   },
