@@ -752,7 +752,21 @@ async function handleMessage(userId, text, channel, files, say, threadTs) {
   }
 
   // ── Send to Claude ──
-  const sayOpts = threadTs ? { text: hasFiles ? "📎 Downloading attachments..." : "Thinking...", thread_ts: threadTs } : (hasFiles ? "📎 Downloading attachments..." : "Thinking...");
+  // Pick the right initial status based on what was attached
+  let initialStatus = "Thinking...";
+  if (hasFiles) {
+    const hasAudio = files.some((f) => {
+      const mime = (f.mimetype || "").toLowerCase();
+      const sub = (f.subtype || "").toLowerCase();
+      return mime.startsWith("audio/") || sub.includes("audio");
+    });
+    if (hasAudio) {
+      initialStatus = "🎤 Receiving voice note...";
+    } else {
+      initialStatus = "📎 Downloading attachments...";
+    }
+  }
+  const sayOpts = threadTs ? { text: initialStatus, thread_ts: threadTs } : initialStatus;
   const thinking = await say(sayOpts);
 
   let attachments = [];
